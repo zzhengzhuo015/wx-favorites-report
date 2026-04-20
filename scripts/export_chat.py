@@ -5,6 +5,11 @@ import tempfile
 from pathlib import Path
 from typing import Optional, Sequence
 
+if __package__ in (None, ""):
+    repo_root = Path(__file__).resolve().parents[1]
+    if str(repo_root) not in sys.path:
+        sys.path.insert(0, str(repo_root))
+
 from scripts.generate_chat_report import write_report
 from scripts.parse_chat import (
     export_messages_csv,
@@ -42,7 +47,14 @@ def build_parser() -> argparse.ArgumentParser:
 
 def _resolve_documents_root(documents_root: Optional[Path] = None) -> Path:
     if documents_root is None:
-        return Path.home() / "Documents"
+        return (
+            Path.home()
+            / "Library"
+            / "Containers"
+            / "com.tencent.xinWeChat"
+            / "Data"
+            / "Documents"
+        )
     return Path(documents_root)
 
 
@@ -77,13 +89,14 @@ def run_export(
 ):
     output = Path(output_dir)
     output.mkdir(parents=True, exist_ok=True)
-    key_log_path = output / "wechat-keys.log"
-    conn = _prepare_connection(key_log_path, documents_root=documents_root)
-    try:
-        session = resolve_chat_session(conn, chat_name=chat_name, chat_type=chat_type)
-        messages = normalize_messages(conn, session)
-    finally:
-        _close_if_possible(conn)
+    with tempfile.TemporaryDirectory() as temp_dir:
+        key_log_path = Path(temp_dir) / "wechat-keys.log"
+        conn = _prepare_connection(key_log_path, documents_root=documents_root)
+        try:
+            session = resolve_chat_session(conn, chat_name=chat_name, chat_type=chat_type)
+            messages = normalize_messages(conn, session)
+        finally:
+            _close_if_possible(conn)
 
     export_data = {
         "chat": session,

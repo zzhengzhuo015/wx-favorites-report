@@ -1,5 +1,4 @@
 import subprocess
-import sqlite3
 from pathlib import Path
 from typing import List
 
@@ -44,11 +43,10 @@ def find_chat_db_candidates(documents_root: Path) -> List[Path]:
 
 
 def capture_runtime_key_log(app_path: Path, log_path: Path) -> Path:
-    del app_path
-    path = Path(log_path)
-    path.parent.mkdir(parents=True, exist_ok=True)
-    path.touch(exist_ok=True)
-    return path
+    raise NotImplementedError(
+        "Task 4 placeholder: runtime key capture is not implemented yet. "
+        "Provide a monkeypatched helper in tests or implement Frida-based capture."
+    )
 
 
 def read_db_salt_hex(db_path: Path) -> str:
@@ -60,6 +58,8 @@ def read_db_salt_hex(db_path: Path) -> str:
     return salt.hex()
 
 
-def open_chat_db(db_path: Path, key_entry) -> sqlite3.Connection:
-    del key_entry
-    return sqlite3.connect(str(db_path))
+def open_chat_db(db_path: Path, key_entry):
+    raise NotImplementedError(
+        "Task 4 placeholder: encrypted chat DB open is not implemented yet. "
+        "Provide a monkeypatched helper in tests or add SQLCipher decryption support."
+    )
