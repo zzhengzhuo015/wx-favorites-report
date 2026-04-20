@@ -116,5 +116,11 @@ def export_messages_csv(messages: List[Dict[str, object]], output_path: Path) ->
     with output_path.open("w", encoding="utf-8", newline="") as handle:
         writer = csv.DictWriter(handle, fieldnames=CSV_FIELDS)
         writer.writeheader()
-        for message in messages:
-            writer.writerow({field: message.get(field, "") for field in CSV_FIELDS})
+        for index, message in enumerate(messages):
+            missing_fields = [field for field in CSV_FIELDS if field not in message]
+            if missing_fields:
+                raise ValueError(
+                    "missing required CSV fields at row "
+                    f"{index}: {', '.join(missing_fields)}"
+                )
+            writer.writerow({field: message[field] for field in CSV_FIELDS})

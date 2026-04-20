@@ -100,7 +100,7 @@ def test_normalize_messages_maps_common_fields(tmp_path: Path):
     assert messages[2]["chat_name"] == "Project Group"
 
 
-def test_export_messages_csv_writes_expected_header(tmp_path: Path):
+def test_export_messages_csv_writes_expected_header_and_row_values(tmp_path: Path):
     output_path = tmp_path / "messages.csv"
     rows = [
         {
@@ -139,4 +139,41 @@ def test_export_messages_csv_writes_expected_header(tmp_path: Path):
         "file_name",
         "file_path",
     ]
-    assert loaded[0]["text"] == "Daily standup at 10"
+    assert loaded == [
+        {
+            "id": "m-1",
+            "session_id": "s-2",
+            "chat_name": "Project Group",
+            "chat_type": "group",
+            "sender": "Alice",
+            "is_outgoing": "False",
+            "timestamp": "2026-04-20T09:00:00",
+            "msg_type": "text",
+            "text": "Daily standup at 10",
+            "quote_text": "",
+            "file_name": "",
+            "file_path": "",
+        }
+    ]
+
+
+def test_export_messages_csv_raises_for_missing_required_field(tmp_path: Path):
+    output_path = tmp_path / "messages.csv"
+    rows = [
+        {
+            "id": "m-1",
+            "session_id": "s-2",
+            "chat_name": "Project Group",
+            "chat_type": "group",
+            "sender": "Alice",
+            "is_outgoing": False,
+            "timestamp": "2026-04-20T09:00:00",
+            "msg_type": "text",
+            "text": "Daily standup at 10",
+            "quote_text": "",
+            "file_name": "",
+        }
+    ]
+
+    with pytest.raises(ValueError, match="missing required CSV fields"):
+        export_messages_csv(rows, output_path)
