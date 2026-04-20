@@ -1,4 +1,5 @@
 import subprocess
+import sqlite3
 from pathlib import Path
 from typing import List
 
@@ -40,3 +41,25 @@ def find_chat_db_candidates(documents_root: Path) -> List[Path]:
         for path in root.glob("xwechat_files/*/db_storage/session/*.db")
         if path.is_file()
     )
+
+
+def capture_runtime_key_log(app_path: Path, log_path: Path) -> Path:
+    del app_path
+    path = Path(log_path)
+    path.parent.mkdir(parents=True, exist_ok=True)
+    path.touch(exist_ok=True)
+    return path
+
+
+def read_db_salt_hex(db_path: Path) -> str:
+    path = Path(db_path)
+    with path.open("rb") as handle:
+        salt = handle.read(16)
+    if len(salt) != 16:
+        raise RuntimeError(f"Database file is too small to contain a salt header: {path}")
+    return salt.hex()
+
+
+def open_chat_db(db_path: Path, key_entry) -> sqlite3.Connection:
+    del key_entry
+    return sqlite3.connect(str(db_path))
