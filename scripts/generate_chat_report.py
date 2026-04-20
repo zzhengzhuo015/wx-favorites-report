@@ -3,6 +3,30 @@ import json
 from pathlib import Path
 
 
+def _display_content(message):
+    text = str(message.get("text", "") or "")
+    if text:
+        return text
+
+    msg_type = str(message.get("msg_type", "") or "")
+    if msg_type == "reply":
+        return str(message.get("quote_text", "") or "")
+    if msg_type == "file":
+        return str(message.get("file_name", "") or "")
+    return ""
+
+
+def _script_safe_json(value):
+    return (
+        json.dumps(value, ensure_ascii=False)
+        .replace("<", "\\u003c")
+        .replace(">", "\\u003e")
+        .replace("&", "\\u0026")
+        .replace("\u2028", "\\u2028")
+        .replace("\u2029", "\\u2029")
+    )
+
+
 def generate_html(export_data):
     chat = export_data.get("chat", {})
     messages = export_data.get("messages", [])
@@ -13,7 +37,7 @@ def generate_html(export_data):
     for message in messages:
         sender = html.escape(str(message.get("sender", "")))
         timestamp = html.escape(str(message.get("timestamp", "")))
-        content = html.escape(str(message.get("text", "")))
+        content = html.escape(_display_content(message))
         parts.append(
             "<li>"
             f"<div><strong>{sender}</strong> <span>{timestamp}</span></div>"
@@ -22,7 +46,7 @@ def generate_html(export_data):
         )
 
     timeline_html = "\n".join(parts) or "<li><div>No messages.</div></li>"
-    messages_json = json.dumps(messages, ensure_ascii=False)
+    messages_json = _script_safe_json(messages)
 
     return f"""<!doctype html>
 <html lang="en">
