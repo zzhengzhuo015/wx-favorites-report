@@ -21,7 +21,9 @@ def test_ensure_supported_platform_rejects_linux_with_macos_error():
 def test_find_signed_wechat_app_prefers_desktop_app(tmp_path: Path, monkeypatch):
     home = tmp_path / "home"
     desktop_app = home / "Desktop" / "WeChat.app"
-    desktop_app.mkdir(parents=True)
+    executable = desktop_app / "Contents" / "MacOS" / "WeChat"
+    executable.parent.mkdir(parents=True)
+    executable.write_text("", encoding="utf-8")
     monkeypatch.setenv("HOME", str(home))
 
     found = find_signed_wechat_app()
@@ -37,6 +39,18 @@ def test_find_signed_wechat_app_raises_when_desktop_app_missing(
     monkeypatch.setenv("HOME", str(home))
 
     with pytest.raises(RuntimeError, match="Desktop/WeChat.app"):
+        find_signed_wechat_app()
+
+
+def test_find_signed_wechat_app_raises_when_bundle_structure_is_invalid(
+    tmp_path: Path, monkeypatch
+):
+    home = tmp_path / "home"
+    desktop_app = home / "Desktop" / "WeChat.app"
+    desktop_app.mkdir(parents=True)
+    monkeypatch.setenv("HOME", str(home))
+
+    with pytest.raises(RuntimeError, match="Contents/MacOS/WeChat"):
         find_signed_wechat_app()
 
 
