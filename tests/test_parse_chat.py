@@ -177,3 +177,44 @@ def test_export_messages_csv_raises_for_missing_required_field(tmp_path: Path):
 
     with pytest.raises(ValueError, match="missing required CSV fields"):
         export_messages_csv(rows, output_path)
+    assert not output_path.exists()
+
+
+def test_export_messages_csv_keeps_existing_file_when_validation_fails(tmp_path: Path):
+    output_path = tmp_path / "messages.csv"
+    original = "id,session_id\nold,s-0\n"
+    output_path.write_text(original, encoding="utf-8")
+    rows = [
+        {
+            "id": "m-1",
+            "session_id": "s-2",
+            "chat_name": "Project Group",
+            "chat_type": "group",
+            "sender": "Alice",
+            "is_outgoing": False,
+            "timestamp": "2026-04-20T09:00:00",
+            "msg_type": "text",
+            "text": "Daily standup at 10",
+            "quote_text": "",
+            "file_name": "",
+            "file_path": "",
+        },
+        {
+            "id": "m-2",
+            "session_id": "s-2",
+            "chat_name": "Project Group",
+            "chat_type": "group",
+            "sender": "Bob",
+            "is_outgoing": True,
+            "timestamp": "2026-04-20T09:01:00",
+            "msg_type": "text",
+            "text": "Ack",
+            "quote_text": "",
+            "file_name": "",
+        },
+    ]
+
+    with pytest.raises(ValueError, match="missing required CSV fields"):
+        export_messages_csv(rows, output_path)
+
+    assert output_path.read_text(encoding="utf-8") == original

@@ -111,16 +111,19 @@ def normalize_messages(
 
 
 def export_messages_csv(messages: List[Dict[str, object]], output_path: Path) -> None:
+    serialized_rows: List[Dict[str, object]] = []
+    for index, message in enumerate(messages):
+        missing_fields = [field for field in CSV_FIELDS if field not in message]
+        if missing_fields:
+            raise ValueError(
+                "missing required CSV fields at row "
+                f"{index}: {', '.join(missing_fields)}"
+            )
+        serialized_rows.append({field: message[field] for field in CSV_FIELDS})
+
     output_path = Path(output_path)
     output_path.parent.mkdir(parents=True, exist_ok=True)
     with output_path.open("w", encoding="utf-8", newline="") as handle:
         writer = csv.DictWriter(handle, fieldnames=CSV_FIELDS)
         writer.writeheader()
-        for index, message in enumerate(messages):
-            missing_fields = [field for field in CSV_FIELDS if field not in message]
-            if missing_fields:
-                raise ValueError(
-                    "missing required CSV fields at row "
-                    f"{index}: {', '.join(missing_fields)}"
-                )
-            writer.writerow({field: message[field] for field in CSV_FIELDS})
+        writer.writerows(serialized_rows)
