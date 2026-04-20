@@ -1,3 +1,4 @@
+import subprocess
 from pathlib import Path
 from typing import List
 
@@ -17,6 +18,18 @@ def find_signed_wechat_app() -> Path:
         raise RuntimeError(
             f"Invalid WeChat app bundle, expected executable at {expected_executable}"
         )
+    try:
+        result = subprocess.run(
+            ["codesign", "--verify", "--deep", "--strict", str(app_path)],
+            capture_output=True,
+            text=True,
+            check=False,
+        )
+    except FileNotFoundError as exc:
+        raise RuntimeError("codesign command not found on this system") from exc
+    if result.returncode != 0:
+        details = (result.stderr or "").strip() or "codesign verification failed"
+        raise RuntimeError(f"WeChat app signature verification failed: {details}")
     return app_path
 
 

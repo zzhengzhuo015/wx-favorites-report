@@ -89,3 +89,19 @@ def test_parse_key_log_raises_for_incomplete_record(tmp_path: Path):
 
     with pytest.raises(RuntimeError, match="Incomplete key log record"):
         parse_key_log(log_path)
+
+
+def test_parse_key_log_raises_for_non_integer_rounds(tmp_path: Path):
+    log_path = tmp_path / "keys.log"
+    log_path.write_text(
+        (
+            "rounds=not-a-number\n"
+            "salt=aaaabbbbccccdddd\n"
+            "pw=password1\n"
+            "dk=dk001\n"
+        ),
+        encoding="utf-8",
+    )
+
+    with pytest.raises(RuntimeError, match="Invalid rounds value"):
+        parse_key_log(log_path)

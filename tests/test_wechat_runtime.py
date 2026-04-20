@@ -25,10 +25,29 @@ def test_find_signed_wechat_app_prefers_desktop_app(tmp_path: Path, monkeypatch)
     executable.parent.mkdir(parents=True)
     executable.write_text("", encoding="utf-8")
     monkeypatch.setenv("HOME", str(home))
+    codesign_calls = []
+
+    class FakeResult:
+        returncode = 0
+        stderr = ""
+
+    def fake_run(cmd, capture_output, text, check):
+        codesign_calls.append((cmd, capture_output, text, check))
+        return FakeResult()
+
+    monkeypatch.setattr("scripts.wechat_runtime.subprocess.run", fake_run)
 
     found = find_signed_wechat_app()
 
     assert found == desktop_app
+    assert codesign_calls == [
+        (
+            ["codesign", "--verify", "--deep", "--strict", str(desktop_app)],
+            True,
+            True,
+            False,
+        )
+    ]
 
 
 def test_find_signed_wechat_app_raises_when_desktop_app_missing(
@@ -51,6 +70,29 @@ def test_find_signed_wechat_app_raises_when_bundle_structure_is_invalid(
     monkeypatch.setenv("HOME", str(home))
 
     with pytest.raises(RuntimeError, match="Contents/MacOS/WeChat"):
+        find_signed_wechat_app()
+
+
+def test_find_signed_wechat_app_raises_when_codesign_verification_fails(
+    tmp_path: Path, monkeypatch
+):
+    home = tmp_path / "home"
+    desktop_app = home / "Desktop" / "WeChat.app"
+    executable = desktop_app / "Contents" / "MacOS" / "WeChat"
+    executable.parent.mkdir(parents=True)
+    executable.write_text("", encoding="utf-8")
+    monkeypatch.setenv("HOME", str(home))
+
+    class FakeResult:
+        returncode = 1
+        stderr = "code object is not signed at all"
+
+    monkeypatch.setattr(
+        "scripts.wechat_runtime.subprocess.run",
+        lambda cmd, capture_output, text, check: FakeResult(),
+    )
+
+    with pytest.raises(RuntimeError, match="code object is not signed at all"):
         find_signed_wechat_app()
 
 
