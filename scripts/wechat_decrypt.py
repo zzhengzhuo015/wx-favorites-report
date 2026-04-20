@@ -42,4 +42,4 @@ def match_key_by_salt(
     for entry in entries:
         if entry.get("salt", "").lower() == target:
             return entry
-    raise ValueError(f"No key entry found for salt: {salt_hex}")
+    raise RuntimeError(f"No key entry found for salt: {salt_hex}")

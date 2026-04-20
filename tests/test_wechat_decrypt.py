@@ -54,5 +54,5 @@ def test_match_key_by_salt_returns_matching_entry():
 def test_match_key_by_salt_raises_when_no_match():
     entries = [{"rounds": 64000, "salt": "aaaabbbb", "pw": "p1", "dk": "d1"}]
 
-    with pytest.raises(ValueError, match="No key entry found for salt"):
+    with pytest.raises(RuntimeError, match="No key entry found for salt"):
         match_key_by_salt(entries, "ffffeeee")
