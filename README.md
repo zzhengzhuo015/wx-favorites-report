@@ -2,6 +2,70 @@
 
 从加密的微信 Mac 本地数据库中提取收藏数据，生成交互式可视化 HTML 报告。
 
+## 聊天记录导出（实验版）
+
+当前仓库除了微信收藏可视化，还支持 `macOS + 微信 4.x` 的单会话聊天记录导出。
+
+### 前置条件
+
+- macOS
+- 微信 4.x 已登录
+- `python3`
+- 已安装依赖：
+
+```bash
+python3 -m pip install frida frida-tools pycryptodome pytest
+```
+
+- 已准备桌面签名副本：
+
+```bash
+cp -R /Applications/WeChat.app ~/Desktop/WeChat.app
+codesign --force --deep --sign - ~/Desktop/WeChat.app
+```
+
+- 已给运行 Codex/终端的 App 开启 `Full Disk Access`
+
+### 列出可导出的会话
+
+```bash
+python3 scripts/export_chat.py --list-chats
+```
+
+运行后会启动桌面版微信副本并尝试抓取数据库密钥。微信启动后，请保持登录状态并打开任意聊天窗口。
+
+### 导出单个联系人或群聊
+
+```bash
+python3 scripts/export_chat.py \
+  --chat "Sample Contact" \
+  --chat-type contact \
+  --output ~/Downloads/wechat-chat-export-sample
+```
+
+导出产物：
+
+- `messages.json`
+- `messages.csv`
+- `report.html`
+
+### 当前实现说明
+
+- 当前已验证单聊文本/系统消息导出链路可用
+- 导出流程会：
+  - 使用 Frida hook `CCKeyDerivationPBKDF`
+  - 捕获 `session.db`、`message_0.db`、`contact.db` 等聊天数据库的派生密钥
+  - 解密数据库并解析真实会话/消息表
+- 运行时必须操作 **Frida 启动出来的桌面版微信副本**，不是原版微信
+
+### 已知限制
+
+- 首次抓 key 时，需要在抓取窗口里手动打开目标聊天
+- 群聊还没有做真实数据验收
+- 当前消息类型主要验证了系统消息和文本消息
+- 媒体、引用、文件等类型的真实 WeChat 解析还需要继续补充
+- 命令每次运行都会重新抓 key，暂时没有持久缓存
+
 ## 效果预览
 
 报告包含：统计仪表盘、月度趋势、类型分布、来源排行、活跃热力图、词云、标签云，以及可按类型/标签筛选的收藏浏览区。
