@@ -1,5 +1,11 @@
+from Crypto.Cipher import AES
+
 from pathlib import Path
 from typing import Dict, List
+
+PAGE_SIZE = 4096
+RESERVE = 80
+SQLITE_HEADER = b"SQLite format 3\x00"
 
 
 def _parse_record_lines(record_lines: List[str], record_start_line: int) -> Dict[str, object]:
@@ -56,3 +62,36 @@ def match_key_by_salt(
         if entry.get("salt", "").lower() == target:
             return entry
     raise RuntimeError(f"No key entry found for salt: {salt_hex}")
+
+
+def decrypt_sqlcipher_db(
+    encrypted_path: Path,
+    key_hex: str,
+    output_path: Path,
+    page_size: int = PAGE_SIZE,
+    reserve: int = RESERVE,
+) -> Path:
+    encrypted_path = Path(encrypted_path)
+    output_path = Path(output_path)
+    key = bytes.fromhex(key_hex)
+    data = encrypted_path.read_bytes()
+    if len(data) % page_size != 0:
+        raise RuntimeError(
+            f"Encrypted database size is not aligned to page size {page_size}: {encrypted_path}"
+        )
+
+    page_count = len(data) // page_size
+    plaintext = bytearray()
+    for page_index in range(page_count):
+        page = data[page_index * page_size : (page_index + 1) * page_size]
+        ciphertext = page[16:-reserve] if page_index == 0 else page[:-reserve]
+        iv = page[-reserve:-64]
+        decrypted = AES.new(key, AES.MODE_CBC, iv).decrypt(ciphertext)
+        if page_index == 0:
+            plaintext.extend(SQLITE_HEADER)
+        plaintext.extend(decrypted)
+        plaintext.extend(b"\x00" * reserve)
+
+    output_path.parent.mkdir(parents=True, exist_ok=True)
+    output_path.write_bytes(bytes(plaintext))
+    return output_path

@@ -28,10 +28,30 @@ from scripts.wechat_runtime import (
 )
 
 
+def _status(message: str) -> None:
+    print(f"[INFO] {message}", file=sys.stderr)
+
+
+def _wait_for_capture_ready(prompt_fn=input) -> None:
+    while True:
+        reply = prompt_fn(
+            "请在副本微信中登录并打开目标聊天窗口，准备好后按回车，或输入 ready 后回车继续："
+        )
+        if reply is None:
+            reply = ""
+        if reply.strip().lower() in {"", "ready"}:
+            return
+        _status("未识别输入，请直接按回车，或输入 ready 后回车。")
+
+
 def build_parser() -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser(description="Export WeChat chat messages and report.")
     parser.add_argument("--chat", help="Chat display name to export.")
-    parser.add_argument("--chat-type", help="Optional chat type filter, e.g. contact/group.")
+    parser.add_argument(
+        "--chat-type",
+        choices=["contact", "group"],
+        help="Optional chat type filter.",
+    )
     parser.add_argument("--output", help="Output directory for export artifacts.")
     parser.add_argument(
         "--list-chats",
@@ -40,7 +60,10 @@ def build_parser() -> argparse.ArgumentParser:
     )
     parser.add_argument(
         "--documents-root",
-        help="Override WeChat documents root path (defaults to ~/Documents).",
+        help=(
+            "Override WeChat documents root path (defaults to "
+            "~/Library/Containers/com.tencent.xinWeChat/Data/Documents)."
+        ),
     )
     return parser
 
@@ -67,12 +90,27 @@ def _prepare_connection(key_log_path: Path, documents_root: Optional[Path] = Non
         raise RuntimeError(
             f"No WeChat chat database candidates found under {resolved_documents_root}"
         )
-    db_path = db_candidates[0]
-    capture_runtime_key_log(app_path, key_log_path)
-    salt_hex = read_db_salt_hex(db_path)
+    _status("正在启动桌面版微信并等待密钥，请在副本微信中打开目标聊天窗口...")
+    prompt_fn = _wait_for_capture_ready if sys.stdin.isatty() else None
+    capture_runtime_key_log(app_path, key_log_path, prompt_fn=prompt_fn)
+    _status("已捕获密钥，正在匹配聊天数据库...")
     key_entries = parse_key_log(key_log_path)
-    key_entry = match_key_by_salt(key_entries, salt_hex)
-    return open_chat_db(db_path, key_entry)
+    db_path = None
+    for candidate in db_candidates:
+        salt_hex = read_db_salt_hex(candidate)
+        try:
+            match_key_by_salt(key_entries, salt_hex)
+        except RuntimeError:
+            continue
+        db_path = candidate
+        break
+    if db_path is None:
+        raise RuntimeError(
+            "Captured runtime keys did not match any session database candidate. "
+            "Make sure the active WeChat account is the one you are trying to export."
+        )
+    _status("正在解密并打开聊天数据库...")
+    return open_chat_db(db_path, key_entries)
 
 
 def _close_if_possible(conn) -> None:
@@ -93,6 +131,7 @@ def run_export(
         key_log_path = Path(temp_dir) / "wechat-keys.log"
         conn = _prepare_connection(key_log_path, documents_root=documents_root)
         try:
+            _status("正在解析聊天消息...")
             session = resolve_chat_session(conn, chat_name=chat_name, chat_type=chat_type)
             messages = normalize_messages(conn, session)
         finally:
@@ -102,6 +141,7 @@ def run_export(
         "chat": session,
         "messages": messages,
     }
+    _status("正在生成导出文件...")
     (output / "messages.json").write_text(
         json.dumps(export_data, ensure_ascii=False, indent=2),
         encoding="utf-8",
@@ -115,6 +155,7 @@ def run_list_chats(documents_root=None):
         key_log_path = Path(temp_dir) / "wechat-keys.log"
         conn = _prepare_connection(key_log_path, documents_root=documents_root)
         try:
+            _status("正在读取会话列表...")
             sessions = list_chat_sessions(conn)
         finally:
             _close_if_possible(conn)
@@ -130,21 +171,24 @@ def run_list_chats(documents_root=None):
 def main(argv: Optional[Sequence[str]] = None) -> int:
     parser = build_parser()
     args = parser.parse_args(argv)
+    try:
+        if args.list_chats:
+            run_list_chats(documents_root=args.documents_root)
+            return 0
 
-    if args.list_chats:
-        run_list_chats(documents_root=args.documents_root)
+        if not args.chat or not args.output:
+            parser.error("--chat and --output are required unless --list-chats is used")
+
+        run_export(
+            chat_name=args.chat,
+            chat_type=args.chat_type,
+            output_dir=args.output,
+            documents_root=args.documents_root,
+        )
         return 0
-
-    if not args.chat or not args.output:
-        parser.error("--chat and --output are required unless --list-chats is used")
-
-    run_export(
-        chat_name=args.chat,
-        chat_type=args.chat_type,
-        output_dir=args.output,
-        documents_root=args.documents_root,
-    )
-    return 0
+    except (RuntimeError, NotImplementedError) as exc:
+        print(f"[ERROR] {exc}", file=sys.stderr)
+        return 1
 
 
 if __name__ == "__main__":
