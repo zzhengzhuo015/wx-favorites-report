@@ -3,6 +3,7 @@ import json
 import re
 import sys
 import tempfile
+import time
 from pathlib import Path
 from typing import Optional, Sequence
 
@@ -11,13 +12,7 @@ if __package__ in (None, ""):
     if str(repo_root) not in sys.path:
         sys.path.insert(0, str(repo_root))
 
-from scripts.generate_chat_report import write_report
-from scripts.parse_chat import (
-    export_messages_csv,
-    list_chat_sessions,
-    normalize_messages,
-    resolve_chat_session,
-)
+from scripts.parse_chat import list_chat_sessions, normalize_messages, resolve_chat_session
 from scripts.wechat_decrypt import match_key_by_salt, parse_key_log
 from scripts.wechat_runtime import (
     capture_runtime_key_log,
@@ -156,22 +151,191 @@ def _close_if_possible(conn) -> None:
         close()
 
 
-def _safe_session_dirname(session: dict) -> str:
-    chat_name = str(session.get("chat_name", "")).strip() or "chat"
-    session_id = str(session.get("session_id", "")).strip() or "unknown"
-    safe_name = re.sub(r"[^A-Za-z0-9._-]+", "-", chat_name).strip("-") or "chat"
-    safe_session_id = re.sub(r"[^A-Za-z0-9._-]+", "-", session_id).strip("-") or "unknown"
-    return f"{safe_name}__{safe_session_id}"
+def _safe_chat_filename_stem(chat_name: str) -> str:
+    stem = str(chat_name or "").strip()
+    stem = re.sub(r'[\\/:*?"<>|\x00-\x1f]+', "-", stem)
+    stem = re.sub(r"\s+", " ", stem).strip(" .")
+    return stem or "chat"
 
 
-def _write_export_artifacts(output_dir: Path, export_data: dict) -> None:
+def _artifact_paths(output_dir: Path, export_data: dict) -> dict:
+    chat = export_data.get("chat", {})
+    stem = _safe_chat_filename_stem(chat.get("chat_name", ""))
+    return {
+        "json": output_dir / f"{stem}.json",
+    }
+
+
+def _unique_json_output_path(
+    output_dir: Path,
+    export_data: dict,
+    used_names=None,
+) -> Path:
+    used_names = used_names if used_names is not None else set()
+    base_path = _artifact_paths(output_dir, export_data)["json"]
+    stem = base_path.stem
+    suffix = base_path.suffix
+    candidate = base_path
+    counter = 2
+    while candidate.name in used_names or candidate.exists():
+        candidate = output_dir / f"{stem} ({counter}){suffix}"
+        counter += 1
+    used_names.add(candidate.name)
+    return candidate
+
+
+def _message_export_type(message: dict) -> int:
+    msg_type = str(message.get("msg_type", "") or "")
+    if msg_type.startswith("type_"):
+        suffix = msg_type.split("_", 1)[1]
+        if suffix.isdigit():
+            return int(suffix)
+
+    mapping = {
+        "text": 0,
+        "image": 1,
+        "video": 3,
+        "file": 4,
+        "sticker": 5,
+        "app": 7,
+        "location": 8,
+        "reply": 25,
+        "card": 27,
+        "system": 80,
+        "voice": 34,
+        "revoke": 10000,
+    }
+    return mapping.get(msg_type, 0)
+
+
+def _message_export_content(message: dict) -> str:
+    text = str(message.get("text", "") or "")
+    if text:
+        return text
+
+    msg_type = str(message.get("msg_type", "") or "")
+    quote_text = str(message.get("quote_text", "") or "")
+    file_name = str(message.get("file_name", "") or "")
+    placeholders = {
+        "image": "[图片]",
+        "video": "[视频]",
+        "voice": "[语音]",
+        "location": "[位置]",
+        "sticker": "[动画表情]",
+        "card": "[名片]",
+    }
+
+    if msg_type == "reply" and quote_text:
+        return quote_text
+    if msg_type == "file" and file_name:
+        return f"[文件] {file_name}"
+    if msg_type in placeholders:
+        return placeholders[msg_type]
+    if file_name:
+        return file_name
+    return ""
+
+
+def _message_export_timestamp(message: dict):
+    value = message.get("timestamp")
+    if isinstance(value, int):
+        return value
+    if isinstance(value, float):
+        return int(value)
+    if isinstance(value, str) and value.isdigit():
+        return int(value)
+    return value
+
+
+def _build_chat_record_export(
+    export_data: dict,
+    *,
+    exported_at: Optional[int] = None,
+    generator: str = "wx-favorites-report",
+) -> dict:
+    chat = export_data.get("chat", {})
+    messages = export_data.get("messages", [])
+
+    owner_id = str(chat.get("owner_id", "") or "").strip()
+    if not owner_id:
+        for message in messages:
+            if message.get("is_outgoing"):
+                owner_id = str(
+                    message.get("sender_id")
+                    or message.get("sender")
+                    or ""
+                ).strip()
+                if owner_id:
+                    break
+    if not owner_id:
+        owner_id = "self"
+
+    meta = {
+        "name": str(chat.get("chat_name", "") or "Unknown Chat"),
+        "platform": "wechat",
+        "type": str(chat.get("chat_type", "") or "contact"),
+        "ownerId": owner_id,
+    }
+    if meta["type"] == "group":
+        meta["groupId"] = str(chat.get("session_id", "") or "")
+
+    members = []
+    seen_members = set()
+    exported_messages = []
+    for message in messages:
+        sender_id = str(
+            message.get("sender_id")
+            or message.get("sender")
+            or "unknown"
+        )
+        account_name = str(message.get("sender") or sender_id)
+        msg_type = str(message.get("msg_type", "") or "")
+        if msg_type != "system" and sender_id not in seen_members:
+            seen_members.add(sender_id)
+            members.append(
+                {
+                    "platformId": sender_id,
+                    "accountName": account_name,
+                }
+            )
+
+        exported_message = {
+            "sender": sender_id,
+            "accountName": account_name,
+            "timestamp": _message_export_timestamp(message),
+            "type": _message_export_type(message),
+            "content": _message_export_content(message),
+            "platformMessageId": str(message.get("id", "") or ""),
+        }
+        exported_messages.append(exported_message)
+
+    return {
+        "chatlab": {
+            "version": "0.0.2",
+            "exportedAt": int(exported_at if exported_at is not None else time.time()),
+            "generator": generator,
+        },
+        "meta": meta,
+        "members": members,
+        "messages": exported_messages,
+    }
+
+
+def _write_export_artifacts(output_dir: Path, export_data: dict, output_path: Optional[Path] = None) -> None:
     output_dir.mkdir(parents=True, exist_ok=True)
-    (output_dir / "messages.json").write_text(
-        json.dumps(export_data, ensure_ascii=False, indent=2),
+    json_output_path = output_path or _artifact_paths(output_dir, export_data)["json"]
+    json_output_path.write_text(
+        json.dumps(_build_chat_record_export(export_data), ensure_ascii=False, indent=2),
         encoding="utf-8",
     )
-    export_messages_csv(export_data["messages"], output_dir / "messages.csv")
-    write_report(export_data, output_dir / "report.html")
+
+
+def _session_export_metadata(conn, session: dict) -> dict:
+    resolved = dict(session)
+    owner_id = str(getattr(conn, "self_username", "") or "").strip()
+    if owner_id and not resolved.get("owner_id"):
+        resolved["owner_id"] = owner_id
+    return resolved
 
 
 def run_export(
@@ -187,7 +351,10 @@ def run_export(
         conn = _prepare_connection(key_log_path, documents_root=documents_root)
         try:
             _status("正在解析聊天消息...")
-            session = resolve_chat_session(conn, chat_name=chat_name, chat_type=chat_type)
+            session = _session_export_metadata(
+                conn,
+                resolve_chat_session(conn, chat_name=chat_name, chat_type=chat_type),
+            )
             messages = normalize_messages(conn, session)
         finally:
             _close_if_possible(conn)
@@ -203,10 +370,6 @@ def run_export(
 def run_export_all(output_dir, documents_root=None):
     output = Path(output_dir)
     output.mkdir(parents=True, exist_ok=True)
-    success_root = output / "success"
-    failed_root = output / "failed"
-    success_root.mkdir(parents=True, exist_ok=True)
-    failed_root.mkdir(parents=True, exist_ok=True)
 
     with tempfile.TemporaryDirectory() as temp_dir:
         key_log_path = Path(temp_dir) / "wechat-keys.log"
@@ -214,56 +377,29 @@ def run_export_all(output_dir, documents_root=None):
         try:
             _status("正在读取会话列表...")
             sessions = list_chat_sessions(conn)
-            results = []
+            used_names = set()
             for session in sessions:
-                session_dirname = _safe_session_dirname(session)
                 _status(f"正在导出会话：{session.get('chat_name', session.get('session_id', ''))}")
                 try:
-                    resolved_session = resolve_chat_session(
+                    resolved_session = _session_export_metadata(
                         conn,
-                        chat_name=session["chat_name"],
-                        chat_type=session["chat_type"],
+                        resolve_chat_session(
+                            conn,
+                            chat_name=session["chat_name"],
+                            chat_type=session["chat_type"],
+                        ),
                     )
                     messages = normalize_messages(conn, resolved_session)
                     export_data = {"chat": resolved_session, "messages": messages}
-                    session_output_dir = success_root / session_dirname
-                    _write_export_artifacts(session_output_dir, export_data)
-                    results.append(
-                        {
-                            "session_id": resolved_session["session_id"],
-                            "chat_name": resolved_session["chat_name"],
-                            "chat_type": resolved_session["chat_type"],
-                            "status": "success",
-                            "output_dir": str(session_output_dir),
-                        }
-                    )
+                    output_path = _unique_json_output_path(output, export_data, used_names=used_names)
+                    _write_export_artifacts(output, export_data, output_path=output_path)
                 except Exception as exc:
-                    failed_payload = {
-                        "session_id": session["session_id"],
-                        "chat_name": session["chat_name"],
-                        "chat_type": session["chat_type"],
-                        "status": "failed",
-                        "error": str(exc),
-                    }
-                    (failed_root / f"{session_dirname}.json").write_text(
-                        json.dumps(failed_payload, ensure_ascii=False, indent=2),
-                        encoding="utf-8",
+                    _status(
+                        "导出失败："
+                        f"{session.get('chat_name', session.get('session_id', ''))}: {exc}"
                     )
-                    results.append(failed_payload)
         finally:
             _close_if_possible(conn)
-
-    summary = {
-        "success": sum(1 for item in results if item["status"] == "success"),
-        "failed": sum(1 for item in results if item["status"] == "failed"),
-        "skipped": sum(1 for item in results if item["status"] == "skipped"),
-        "total": len(results),
-    }
-    manifest = {"results": results, "summary": summary}
-    (output / "manifest.json").write_text(
-        json.dumps(manifest, ensure_ascii=False, indent=2),
-        encoding="utf-8",
-    )
 
 
 def run_list_chats(documents_root=None):

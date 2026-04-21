@@ -340,6 +340,7 @@ def test_normalize_messages_maps_common_fields(tmp_path: Path):
         messages = normalize_messages(conn, session)
 
     assert messages[0]["msg_type"] == "text"
+    assert messages[0]["sender_id"] == "Alice"
     assert messages[1]["quote_text"] == "Daily standup at 10"
     assert messages[2]["file_name"] == "roadmap.pdf"
     assert messages[2]["chat_name"] == "Project Group"
@@ -492,11 +493,14 @@ def test_normalize_messages_supports_real_wechat_schema(tmp_path: Path):
     assert [message["msg_type"] for message in messages] == ["system", "text", "text", "type_42"]
     assert messages[0]["sender"] == "系统"
     assert messages[1]["sender"] == "Sample Contact"
+    assert messages[1]["sender_id"] == "wxid_friend"
     assert messages[1]["is_outgoing"] is False
     assert messages[2]["sender"] == "Self User"
+    assert messages[2]["sender_id"] == "wxid_self"
     assert messages[2]["is_outgoing"] is True
     assert messages[2]["text"] == "hello"
     assert messages[3]["sender"] == "Sample Contact"
+    assert messages[3]["sender_id"] == "wxid_friend"
     assert messages[3]["is_outgoing"] is False
     assert messages[3]["text"] == "[未支持的消息类型 42]"
 
@@ -518,5 +522,6 @@ def test_normalize_messages_supports_real_wechat_group_schema_with_duplicate_nam
         conn.close()
 
     assert [message["sender"] for message in messages] == ["Shared Name", "Shared Name"]
+    assert [message["sender_id"] for message in messages] == ["wxid_self", "wxid_other"]
     assert [message["is_outgoing"] for message in messages] == [True, False]
     assert [message["text"] for message in messages] == ["我发的", "他发的"]

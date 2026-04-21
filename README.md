@@ -4,7 +4,7 @@
 
 ## 聊天记录导出（实验版）
 
-当前仓库除了微信收藏可视化，还支持 `macOS + 微信 4.x` 的单会话聊天记录导出。
+当前仓库除了微信收藏可视化，还支持 `macOS + 微信 4.x` 的聊天记录导出。
 
 ### 前置条件
 
@@ -45,13 +45,46 @@ python3 scripts/export_chat.py \
 
 导出产物：
 
-- `messages.json`
-- `messages.csv`
-- `report.html`
+- `<聊天名称>.json`
+
+其中 `<聊天名称>` 会使用群聊或单聊名称作为文件名，并尽量保留中文、空格和 emoji，只替换文件系统不允许的字符。
+
+`<聊天名称>.json` 当前输出为外部聊天记录格式，顶层结构为：
+
+- `chatlab`
+- `meta`
+- `members`
+- `messages`
+
+其中：
+
+- `meta.ownerId` 表示当前账号的微信平台 ID
+- 群聊会额外包含 `meta.groupId`
+- `messages[*].sender` 为平台 ID
+- `messages[*].accountName` 为导出时解析到的显示名
+
+### 批量导出全部可发现会话
+
+```bash
+python3 scripts/export_chat.py \
+  --all-chats \
+  --output ~/Downloads/wechat-chat-export-all
+```
+
+批量导出目录结构：
+
+- `<聊天名称>.json`
+
+说明：
+
+- 批量导出会直接在输出目录下生成一组 `<聊天名称>.json`
+- 如果存在重名会话，会自动追加 ` (2)`、` (3)` 这类后缀避免覆盖
+- 每个 JSON 文件都与单会话导出一致，使用同样的 `chatlab / meta / members / messages` 结构
 
 ### 当前实现说明
 
 - 当前已验证单聊文本/系统消息导出链路可用
+- 单会话与批量导出复用同一套聊天记录 JSON 转换逻辑
 - 导出流程会：
   - 使用 Frida hook `CCKeyDerivationPBKDF`
   - 捕获 `session.db`、`message_0.db`、`contact.db` 等聊天数据库的派生密钥

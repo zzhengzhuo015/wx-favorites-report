@@ -95,7 +95,7 @@ def _find_message_schema_and_table(conn, session_id: str) -> Optional[tuple]:
     return None
 
 
-def _contact_names_by_id(conn) -> Dict[int, str]:
+def _contact_info_by_id(conn) -> Dict[int, Dict[str, str]]:
     rows = conn.execute(
         """
         SELECT id, username, IFNULL(remark, ''), IFNULL(nick_name, '')
@@ -103,7 +103,10 @@ def _contact_names_by_id(conn) -> Dict[int, str]:
         """
     ).fetchall()
     return {
-        int(row[0]): _resolve_display_name(row[2], row[3], row[1])
+        int(row[0]): {
+            "username": str(row[1] or ""),
+            "display_name": _resolve_display_name(row[2], row[3], row[1]),
+        }
         for row in rows
         if row[0] is not None
     }
@@ -133,10 +136,11 @@ def _normalize_real_wechat_messages(
             f"no message table found for chat session {session['session_id']!r}"
         )
     schema_name, table_name = located
-    contact_names = _contact_names_by_id(conn)
+    contact_info = _contact_info_by_id(conn)
     contact_ids = _contact_id_by_username(conn)
     self_contact_id = contact_ids.get(getattr(conn, "self_username", ""))
     self_display_name = getattr(conn, "self_display_name", "我")
+    self_username = getattr(conn, "self_username", "")
     query = f"""
         SELECT
             local_id,
@@ -164,14 +168,18 @@ def _normalize_real_wechat_messages(
         incoming = _is_incoming_message(source)
         if msg_type == "system":
             sender = "系统"
+            sender_id = "system"
             is_outgoing = False
         elif session["chat_type"] == "group":
-            sender = contact_names.get(real_sender_id, session["chat_name"])
+            sender_info = contact_info.get(real_sender_id, {})
+            sender = sender_info.get("display_name", session["chat_name"])
+            sender_id = sender_info.get("username", sender)
             is_outgoing = (
                 self_contact_id is not None and real_sender_id == self_contact_id
             )
         else:
             sender = session["chat_name"] if incoming else self_display_name
+            sender_id = session["session_id"] if incoming else (self_username or sender)
             is_outgoing = not incoming
         if msg_type in {"system", "text"}:
             text = _decode_message_text(message_content)
@@ -188,6 +196,7 @@ def _normalize_real_wechat_messages(
                 "chat_name": session["chat_name"],
                 "chat_type": session["chat_type"],
                 "sender": sender,
+                "sender_id": sender_id,
                 "is_outgoing": is_outgoing,
                 "timestamp": str(create_time),
                 "msg_type": msg_type,
@@ -284,6 +293,7 @@ def normalize_messages(
                 "chat_name": session["chat_name"],
                 "chat_type": session["chat_type"],
                 "sender": row[1],
+                "sender_id": row[1],
                 "is_outgoing": bool(row[2]),
                 "timestamp": row[3],
                 "msg_type": row[4],

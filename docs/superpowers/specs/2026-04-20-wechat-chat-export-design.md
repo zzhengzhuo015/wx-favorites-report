@@ -4,17 +4,16 @@
 
 This document specifies a first usable version of chat export built from the same runtime-assisted approach already used for WeChat favorites export in this repository.
 
-The new feature will export a single WeChat 4.x chat session on macOS by guiding the user to open the target conversation, capturing the database key material at runtime, parsing the session's messages, and producing `JSON`, `CSV`, and `HTML` outputs.
+The feature exports WeChat 4.x chat sessions on macOS by guiding the user to open a conversation, capturing the database key material at runtime, parsing the session's messages, and producing JSON output. The current implementation supports both single-session export and batch export of all discoverable sessions.
 
 ## Goals
 
 - Support `macOS + WeChat 4.x` only for the first version
 - Export a single contact chat or group chat per run
+- Support batch export of all discoverable sessions in one run
 - Reuse the current repository's Python CLI style and reporting patterns where practical
-- Produce three outputs from one run:
-  - `messages.json`
-  - `messages.csv`
-  - `report.html`
+- Produce one JSON output from one run:
+  - `<chat-name>.json`
 - Cover common message categories in the first version:
   - text
   - quote/reply
@@ -50,6 +49,7 @@ python3 scripts/export_chat.py \
 ```bash
 python3 scripts/export_chat.py --list-chats
 python3 scripts/export_chat.py --chat "Project Group" --chat-type group --output ~/Downloads/wechat-chat-export
+python3 scripts/export_chat.py --all-chats --output ~/Downloads/wechat-chat-export-all
 ```
 
 ### Expected runtime flow
@@ -62,7 +62,9 @@ python3 scripts/export_chat.py --chat "Project Group" --chat-type group --output
 6. Open the decrypted or decryptable SQLite database.
 7. Resolve the target chat session from user input.
 8. Parse messages and normalize them into a stable export schema.
-9. Write `messages.json`, `messages.csv`, and `report.html`.
+9. Write `<chat-name>.json`.
+
+For batch mode, steps 7-9 repeat for each discoverable session and the CLI writes the exported chat JSON files directly into the chosen output directory.
 
 ## Scope Constraints
 
@@ -127,17 +129,6 @@ Responsibilities:
 - normalize raw rows into a stable export structure
 - handle unsupported message types without crashing the export
 
-### 5. `scripts/generate_chat_report.py`
-
-HTML report generation.
-
-Responsibilities:
-
-- read normalized message export data
-- generate a browseable single-file HTML report
-- present the chat as a timeline/message stream rather than a favorites dashboard
-- support filtering by sender, type, and time range when feasible without over-complicating the first version
-
 ## Data Flow
 
 ```text
@@ -147,16 +138,17 @@ export_chat.py
   -> capture runtime key material
   -> match key to target database
   -> obtain readable SQLite access
-  -> resolve target session
+  -> resolve target session(s)
   -> parse and normalize messages
   -> write JSON
-  -> write CSV
-  -> generate HTML report
+  -> optionally write batch manifest
 ```
 
 ## Export Schema
 
-The normalized message model should remain stable even if internal WeChat structures vary. The first version will export a schema shaped like:
+The tool maintains an internal normalized message model so parsing remains stable even if internal WeChat structures vary. That internal model is then converted into the external `<chat-name>.json` format written to disk.
+
+### Internal normalized message model
 
 ```json
 {
@@ -165,22 +157,61 @@ The normalized message model should remain stable even if internal WeChat struct
   "chat_name": "Project Group",
   "chat_type": "group",
   "sender": "Alice",
+  "sender_id": "wxid_alice",
   "is_outgoing": false,
   "timestamp": "2026-04-20T11:23:00",
   "msg_type": "text",
   "text": "hello",
   "quote_text": "",
   "file_name": "",
-  "file_path": "",
-  "raw": {}
+  "file_path": ""
+}
+```
+
+### External `<chat-name>.json` format
+
+The JSON file written by the CLI is shaped like:
+
+```json
+{
+  "chatlab": {
+    "version": "0.0.2",
+    "exportedAt": 1776240866,
+    "generator": "wx-favorites-report"
+  },
+  "meta": {
+    "name": "Project Group",
+    "platform": "wechat",
+    "type": "group",
+    "ownerId": "wxid_self",
+    "groupId": "room@chatroom"
+  },
+  "members": [
+    {
+      "platformId": "wxid_alice",
+      "accountName": "Alice"
+    }
+  ],
+  "messages": [
+    {
+      "sender": "wxid_alice",
+      "accountName": "Alice",
+      "timestamp": 1776685332,
+      "type": 0,
+      "content": "hello",
+      "platformMessageId": "msg-123"
+    }
+  ]
 }
 ```
 
 Notes:
 
-- `raw` preserves important original fields for debugging and future parser expansion.
-- Media messages should populate file-related metadata when available.
-- Unsupported or partially supported types should still emit a row with best-effort metadata and a clear `msg_type`.
+- `meta.ownerId` is sourced from the logged-in account when available, otherwise inferred from outgoing messages.
+- Group exports include `meta.groupId`; contact exports omit that field.
+- `messages[*].sender` is the platform ID, while `messages[*].accountName` is the resolved display name.
+- Media and non-text messages are mapped into external numeric `type` codes with best-effort placeholder content such as `[图片]`, `[视频]`, or `[文件] filename`.
+- Batch export writes files directly as `<chat-name>.json`; if names collide, numeric suffixes such as ` (2)` are appended.
 
 ## Session Resolution
 
@@ -189,6 +220,7 @@ The first version must support these selection patterns:
 - exact or fuzzy chat name match through `--chat`
 - optional narrowing with `--chat-type contact|group`
 - listing discoverable sessions with `--list-chats`
+- exporting all discoverable sessions through `--all-chats`
 
 If multiple sessions match, the CLI must fail clearly and tell the user how to disambiguate.
 
@@ -242,7 +274,7 @@ Response style:
 Examples:
 
 - output directory not writable
-- CSV or HTML write failure
+- JSON write failure
 
 Response style:
 
@@ -259,8 +291,7 @@ Focus areas:
 
 - session matching logic
 - message-type normalization
-- CSV row generation
-- HTML report data shaping
+- external JSON shaping
 
 These tests should not require a live WeChat process.
 
@@ -280,7 +311,8 @@ Run in a real `macOS + WeChat 4.x` environment and verify:
 
 - one contact chat export
 - one group chat export
-- successful creation of `messages.json`, `messages.csv`, and `report.html`
+- one batch export run
+- successful creation of `<chat-name>.json`
 
 ## Risks And Mitigations
 
@@ -311,16 +343,15 @@ Mitigation:
 Mitigation:
 
 - degrade to best-effort rows for individual messages
-- preserve original fields in `raw`
+- keep the internal normalized schema stable even when the external JSON shape evolves
 
 ## Implementation Order
 
 1. Identify real chat database locations and queryable schema in the local macOS WeChat 4.x environment.
 2. Build test fixtures and parser expectations around the discovered schema.
 3. Add the new chat parsing and session-resolution modules.
-4. Add JSON/CSV export.
-5. Add HTML report generation.
-6. Add the top-level guided CLI that connects runtime capture, database access, and exports.
+4. Add JSON export.
+5. Add the top-level guided CLI that connects runtime capture, database access, and exports.
 
 ## Open Assumptions
 
