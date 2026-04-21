@@ -6,10 +6,12 @@ from pathlib import Path
 import pytest
 
 from scripts.export_chat import (
+    _build_chat_record_export,
     _wait_for_capture_ready,
     build_parser,
     main,
     run_export,
+    run_export_all,
     run_list_chats,
 )
 from scripts.wechat_runtime import open_chat_db
@@ -42,7 +44,92 @@ def test_wait_for_capture_ready_accepts_enter_and_ready(capsys):
     assert "未识别输入" in captured.err
 
 
-def test_run_export_writes_json_csv_and_html(tmp_path: Path, monkeypatch):
+def test_build_chat_record_export_matches_external_schema():
+    export_data = {
+        "chat": {
+            "session_id": "room@chatroom",
+            "chat_name": "Project Group",
+            "chat_type": "group",
+        },
+        "messages": [
+            {
+                "id": "m-1",
+                "session_id": "room@chatroom",
+                "chat_name": "Project Group",
+                "chat_type": "group",
+                "sender": "Alice",
+                "sender_id": "wxid_alice",
+                "is_outgoing": False,
+                "timestamp": "1776685332",
+                "msg_type": "text",
+                "text": "Daily standup at 10",
+                "quote_text": "",
+                "file_name": "",
+                "file_path": "",
+            },
+            {
+                "id": "m-2",
+                "session_id": "room@chatroom",
+                "chat_name": "Project Group",
+                "chat_type": "group",
+                "sender": "Self User",
+                "sender_id": "wxid_self",
+                "is_outgoing": True,
+                "timestamp": "1776685399",
+                "msg_type": "file",
+                "text": "",
+                "quote_text": "",
+                "file_name": "roadmap.pdf",
+                "file_path": "/tmp/roadmap.pdf",
+            },
+        ],
+    }
+
+    payload = _build_chat_record_export(
+        export_data,
+        exported_at=1776240866,
+        generator="CipherTalk",
+    )
+
+    assert payload == {
+        "chatlab": {
+            "version": "0.0.2",
+            "exportedAt": 1776240866,
+            "generator": "CipherTalk",
+        },
+        "meta": {
+            "name": "Project Group",
+            "platform": "wechat",
+            "type": "group",
+            "ownerId": "wxid_self",
+            "groupId": "room@chatroom",
+        },
+        "members": [
+            {"platformId": "wxid_alice", "accountName": "Alice"},
+            {"platformId": "wxid_self", "accountName": "Self User"},
+        ],
+        "messages": [
+            {
+                "sender": "wxid_alice",
+                "accountName": "Alice",
+                "timestamp": 1776685332,
+                "type": 0,
+                "content": "Daily standup at 10",
+                "platformMessageId": "m-1",
+            },
+            {
+                "sender": "wxid_self",
+                "accountName": "Self User",
+                "timestamp": 1776685399,
+                "type": 4,
+                "content": "[文件] roadmap.pdf",
+                "platformMessageId": "m-2",
+            },
+        ],
+    }
+
+
+def test_run_export_writes_only_json(tmp_path: Path, monkeypatch):
     output_dir = tmp_path / "export"
     documents_root = tmp_path / "Documents"
     fake_conn = object()
@@ -59,6 +146,7 @@ def test_run_export_writes_json_csv_and_html(tmp_path: Path, monkeypatch):
             "chat_name": "Project Group",
             "chat_type": "group",
             "sender": "Alice",
+            "sender_id": "wxid_alice",
             "is_outgoing": False,
             "timestamp": "2026-04-20T09:00:00",
             "msg_type": "text",
@@ -102,20 +190,139 @@ def test_run_export_writes_json_csv_and_html(tmp_path: Path, monkeypatch):
         documents_root=documents_root,
     )
 
-    json_path = output_dir / "messages.json"
-    csv_path = output_dir / "messages.csv"
-    html_path = output_dir / "report.html"
-
+    json_path = output_dir / "Project Group.json"
     assert json_path.exists()
-    assert csv_path.exists()
-    assert html_path.exists()
+    assert not (output_dir / "Project Group.csv").exists()
+    assert not (output_dir / "Project Group.html").exists()
     assert captured_key_log_paths
     assert captured_key_log_paths[0].parent != output_dir
     assert not (output_dir / "wechat-keys.log").exists()
 
     payload = json.loads(json_path.read_text(encoding="utf-8"))
-    assert payload["chat"]["session_id"] == "s-2"
-    assert payload["messages"][0]["id"] == "m-1"
+    assert payload["meta"]["groupId"] == "s-2"
+    assert payload["meta"]["type"] == "group"
+    assert payload["messages"][0]["platformMessageId"] == "m-1"
+    assert payload["messages"][0]["accountName"] == "Alice"
+
+
+def test_run_export_all_names_json_after_chat(tmp_path: Path, monkeypatch):
+    output_dir = tmp_path / "export-all"
+    fake_conn = object()
+    sessions = [
+        {
+            "session_id": "s-group",
+            "chat_name": "黑手册目前唯一群🪺🐉",
+            "chat_type": "group",
+        },
+        {
+            "session_id": "s-contact",
+            "chat_name": "Alice",
+            "chat_type": "contact",
+        },
+    ]
+
+    def resolve_chat_session(conn, chat_name, chat_type):
+        return next(
+            session
+            for session in sessions
+            if session["chat_name"] == chat_name and session["chat_type"] == chat_type
+        )
+
+    def normalize_messages(conn, session):
+        return [
+            {
+                "id": f"msg-{session['session_id']}",
+                "session_id": session["session_id"],
+                "chat_name": session["chat_name"],
+                "chat_type": session["chat_type"],
+                "sender": session["chat_name"],
+                "sender_id": session["session_id"],
+                "is_outgoing": False,
+                "timestamp": "2026-04-20T09:00:00",
+                "msg_type": "text",
+                "text": "hello",
+                "quote_text": "",
+                "file_name": "",
+                "file_path": "",
+            }
+        ]
+
+    monkeypatch.setattr("scripts.export_chat._prepare_connection", lambda *args, **kwargs: fake_conn)
+    monkeypatch.setattr("scripts.export_chat.list_chat_sessions", lambda conn: sessions)
+    monkeypatch.setattr("scripts.export_chat.resolve_chat_session", resolve_chat_session)
+    monkeypatch.setattr("scripts.export_chat.normalize_messages", normalize_messages)
+
+    run_export_all(output_dir=output_dir)
+
+    assert (output_dir / "黑手册目前唯一群🪺🐉.json").exists()
+    assert (output_dir / "Alice.json").exists()
+    assert not (output_dir / "success").exists()
+    assert not (output_dir / "failed").exists()
+    assert not (output_dir / "manifest.json").exists()
+    assert sorted(path.name for path in output_dir.iterdir()) == [
+        "Alice.json",
+        "黑手册目前唯一群🪺🐉.json",
+    ]
+
+
+def test_run_export_all_deduplicates_duplicate_chat_names(tmp_path: Path, monkeypatch):
+    output_dir = tmp_path / "export-all"
+    fake_conn = object()
+    sessions = [
+        {
+            "session_id": "s-1",
+            "chat_name": "Project Group",
+            "chat_type": "group",
+        },
+        {
+            "session_id": "s-2",
+            "chat_name": "Project Group",
+            "chat_type": "group",
+        },
+    ]
+
+    def resolve_chat_session(conn, chat_name, chat_type):
+        return next(
+            session
+            for session in sessions
+            if session["chat_name"] == chat_name and session["chat_type"] == chat_type
+        )
+
+    seen = {"Project Group": 0}
+
+    def resolve_chat_session(conn, chat_name, chat_type):
+        seen[chat_name] += 1
+        index = seen[chat_name] - 1
+        return sessions[index]
+
+    def normalize_messages(conn, session):
+        return [
+            {
+                "id": f"msg-{session['session_id']}",
+                "session_id": session["session_id"],
+                "chat_name": session["chat_name"],
+                "chat_type": session["chat_type"],
+                "sender": session["chat_name"],
+                "sender_id": session["session_id"],
+                "is_outgoing": False,
+                "timestamp": "2026-04-20T09:00:00",
+                "msg_type": "text",
+                "text": session["session_id"],
+                "quote_text": "",
+                "file_name": "",
+                "file_path": "",
+            }
+        ]
+
+    monkeypatch.setattr("scripts.export_chat._prepare_connection", lambda *args, **kwargs: fake_conn)
+    monkeypatch.setattr("scripts.export_chat.list_chat_sessions", lambda conn: sessions)
+    monkeypatch.setattr("scripts.export_chat.resolve_chat_session", resolve_chat_session)
+    monkeypatch.setattr("scripts.export_chat.normalize_messages", normalize_messages)
+
+    run_export_all(output_dir=output_dir)
+
+    assert (output_dir / "Project Group.json").exists()
+    assert (output_dir / "Project Group (2).json").exists()
 
 
 def test_run_export_prints_progress_updates(tmp_path: Path, monkeypatch, capsys):
