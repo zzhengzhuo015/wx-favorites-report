@@ -185,6 +185,99 @@ def test_run_export_prints_progress_updates(tmp_path: Path, monkeypatch, capsys)
     assert "正在生成导出文件" in captured.err
 
 
+def test_run_export_prints_matched_db_keys_and_usage(tmp_path: Path, monkeypatch, capsys):
+    output_dir = tmp_path / "export"
+    documents_root = tmp_path / "Documents"
+    fake_conn = object()
+    session = {
+        "session_id": "s-2",
+        "chat_name": "Project Group",
+        "chat_type": "group",
+    }
+    messages = [
+        {
+            "id": "m-1",
+            "session_id": "s-2",
+            "chat_name": "Project Group",
+            "chat_type": "group",
+            "sender": "Alice",
+            "is_outgoing": False,
+            "timestamp": "2026-04-20T09:00:00",
+            "msg_type": "text",
+            "text": "Daily standup at 10",
+            "quote_text": "",
+            "file_name": "",
+            "file_path": "",
+        }
+    ]
+    session_db = (
+        documents_root / "xwechat_files" / "user" / "db_storage" / "session" / "session.db"
+    )
+    contact_db = (
+        documents_root / "xwechat_files" / "user" / "db_storage" / "contact" / "contact.db"
+    )
+    message_db = (
+        documents_root / "xwechat_files" / "user" / "db_storage" / "message" / "message_0.db"
+    )
+    for path in [session_db, contact_db, message_db]:
+        path.parent.mkdir(parents=True, exist_ok=True)
+        path.write_text("stub", encoding="utf-8")
+
+    monkeypatch.setattr("scripts.export_chat.ensure_supported_platform", lambda _: "darwin")
+    monkeypatch.setattr(
+        "scripts.export_chat.find_signed_wechat_app",
+        lambda: Path("/Applications/WeChat.app"),
+    )
+    monkeypatch.setattr(
+        "scripts.export_chat.find_chat_db_candidates",
+        lambda root: [session_db],
+    )
+    monkeypatch.setattr(
+        "scripts.export_chat.capture_runtime_key_log",
+        lambda app_path, log_path, wait_seconds=120, prompt_fn=None: None,
+    )
+    monkeypatch.setattr(
+        "scripts.export_chat.read_db_salt_hex",
+        lambda path: {
+            session_db: "session-salt",
+            contact_db: "contact-salt",
+            message_db: "message-salt",
+        }[Path(path)],
+    )
+    monkeypatch.setattr(
+        "scripts.export_chat.parse_key_log",
+        lambda _: [
+            {"rounds": 256000, "salt": "session-salt", "pw": "pw", "dk": "session-dk"},
+            {"rounds": 256000, "salt": "contact-salt", "pw": "pw", "dk": "contact-dk"},
+            {"rounds": 256000, "salt": "message-salt", "pw": "pw", "dk": "message-dk"},
+        ],
+    )
+    monkeypatch.setattr(
+        "scripts.export_chat.match_key_by_salt",
+        lambda entries, salt_hex: next(item for item in entries if item["salt"] == salt_hex),
+    )
+    monkeypatch.setattr("scripts.export_chat.open_chat_db", lambda db_path, key_entry: fake_conn)
+    monkeypatch.setattr("scripts.export_chat.resolve_chat_session", lambda conn, chat_name, chat_type: session)
+    monkeypatch.setattr("scripts.export_chat.normalize_messages", lambda conn, resolved: messages)
+
+    run_export(
+        chat_name="Project Group",
+        chat_type="group",
+        output_dir=output_dir,
+        documents_root=documents_root,
+    )
+
+    captured = capsys.readouterr()
+    assert "[KEY] session.db" in captured.err
+    assert "用途: 会话列表、摘要、排序" in captured.err
+    assert "salt: session-salt" in captured.err
+    assert "dk: session-dk" in captured.err
+    assert "[KEY] contact.db" in captured.err
+    assert "用途: 联系人、备注、昵称映射" in captured.err
+    assert "[KEY] message_0.db" in captured.err
+    assert "用途: 具体消息内容" in captured.err
+
+
 def test_run_list_chats_prints_sessions(tmp_path: Path, monkeypatch, capsys):
     documents_root = tmp_path / "Documents"
     fake_conn = object()

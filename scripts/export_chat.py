@@ -1,5 +1,6 @@
 import argparse
 import json
+import re
 import sys
 import tempfile
 from pathlib import Path
@@ -32,6 +33,10 @@ def _status(message: str) -> None:
     print(f"[INFO] {message}", file=sys.stderr)
 
 
+def _key(message: str) -> None:
+    print(message, file=sys.stderr)
+
+
 def _wait_for_capture_ready(prompt_fn=input) -> None:
     while True:
         reply = prompt_fn(
@@ -47,6 +52,11 @@ def _wait_for_capture_ready(prompt_fn=input) -> None:
 def build_parser() -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser(description="Export WeChat chat messages and report.")
     parser.add_argument("--chat", help="Chat display name to export.")
+    parser.add_argument(
+        "--all-chats",
+        action="store_true",
+        help="Export all discoverable chats into per-session subdirectories.",
+    )
     parser.add_argument(
         "--chat-type",
         choices=["contact", "group"],
@@ -81,6 +91,32 @@ def _resolve_documents_root(documents_root: Optional[Path] = None) -> Path:
     return Path(documents_root)
 
 
+def _chat_db_descriptions(session_db_path: Path):
+    db_storage_root = session_db_path.parent.parent
+    related = [
+        (session_db_path, "会话列表、摘要、排序"),
+        (db_storage_root / "contact" / "contact.db", "联系人、备注、昵称映射"),
+    ]
+    related.extend(
+        (path, "具体消息内容")
+        for path in sorted((db_storage_root / "message").glob("message_[0-9]*.db"))
+    )
+    return [(path, purpose) for path, purpose in related if path.exists()]
+
+
+def _print_matched_keys(session_db_path: Path, key_entries) -> None:
+    for db_path, purpose in _chat_db_descriptions(session_db_path):
+        salt_hex = read_db_salt_hex(db_path)
+        try:
+            key_entry = match_key_by_salt(key_entries, salt_hex)
+        except RuntimeError:
+            continue
+        _key(f"[KEY] {db_path.name}")
+        _key(f"      用途: {purpose}")
+        _key(f"      salt: {salt_hex}")
+        _key(f"      dk: {key_entry['dk']}")
+
+
 def _prepare_connection(key_log_path: Path, documents_root: Optional[Path] = None):
     ensure_supported_platform(sys.platform)
     resolved_documents_root = _resolve_documents_root(documents_root)
@@ -109,6 +145,7 @@ def _prepare_connection(key_log_path: Path, documents_root: Optional[Path] = Non
             "Captured runtime keys did not match any session database candidate. "
             "Make sure the active WeChat account is the one you are trying to export."
         )
+    _print_matched_keys(db_path, key_entries)
     _status("正在解密并打开聊天数据库...")
     return open_chat_db(db_path, key_entries)
 
@@ -117,6 +154,24 @@ def _close_if_possible(conn) -> None:
     close = getattr(conn, "close", None)
     if callable(close):
         close()
+
+
+def _safe_session_dirname(session: dict) -> str:
+    chat_name = str(session.get("chat_name", "")).strip() or "chat"
+    session_id = str(session.get("session_id", "")).strip() or "unknown"
+    safe_name = re.sub(r"[^A-Za-z0-9._-]+", "-", chat_name).strip("-") or "chat"
+    safe_session_id = re.sub(r"[^A-Za-z0-9._-]+", "-", session_id).strip("-") or "unknown"
+    return f"{safe_name}__{safe_session_id}"
+
+
+def _write_export_artifacts(output_dir: Path, export_data: dict) -> None:
+    output_dir.mkdir(parents=True, exist_ok=True)
+    (output_dir / "messages.json").write_text(
+        json.dumps(export_data, ensure_ascii=False, indent=2),
+        encoding="utf-8",
+    )
+    export_messages_csv(export_data["messages"], output_dir / "messages.csv")
+    write_report(export_data, output_dir / "report.html")
 
 
 def run_export(
@@ -142,12 +197,73 @@ def run_export(
         "messages": messages,
     }
     _status("正在生成导出文件...")
-    (output / "messages.json").write_text(
-        json.dumps(export_data, ensure_ascii=False, indent=2),
+    _write_export_artifacts(output, export_data)
+
+
+def run_export_all(output_dir, documents_root=None):
+    output = Path(output_dir)
+    output.mkdir(parents=True, exist_ok=True)
+    success_root = output / "success"
+    failed_root = output / "failed"
+    success_root.mkdir(parents=True, exist_ok=True)
+    failed_root.mkdir(parents=True, exist_ok=True)
+
+    with tempfile.TemporaryDirectory() as temp_dir:
+        key_log_path = Path(temp_dir) / "wechat-keys.log"
+        conn = _prepare_connection(key_log_path, documents_root=documents_root)
+        try:
+            _status("正在读取会话列表...")
+            sessions = list_chat_sessions(conn)
+            results = []
+            for session in sessions:
+                session_dirname = _safe_session_dirname(session)
+                _status(f"正在导出会话：{session.get('chat_name', session.get('session_id', ''))}")
+                try:
+                    resolved_session = resolve_chat_session(
+                        conn,
+                        chat_name=session["chat_name"],
+                        chat_type=session["chat_type"],
+                    )
+                    messages = normalize_messages(conn, resolved_session)
+                    export_data = {"chat": resolved_session, "messages": messages}
+                    session_output_dir = success_root / session_dirname
+                    _write_export_artifacts(session_output_dir, export_data)
+                    results.append(
+                        {
+                            "session_id": resolved_session["session_id"],
+                            "chat_name": resolved_session["chat_name"],
+                            "chat_type": resolved_session["chat_type"],
+                            "status": "success",
+                            "output_dir": str(session_output_dir),
+                        }
+                    )
+                except Exception as exc:
+                    failed_payload = {
+                        "session_id": session["session_id"],
+                        "chat_name": session["chat_name"],
+                        "chat_type": session["chat_type"],
+                        "status": "failed",
+                        "error": str(exc),
+                    }
+                    (failed_root / f"{session_dirname}.json").write_text(
+                        json.dumps(failed_payload, ensure_ascii=False, indent=2),
+                        encoding="utf-8",
+                    )
+                    results.append(failed_payload)
+        finally:
+            _close_if_possible(conn)
+
+    summary = {
+        "success": sum(1 for item in results if item["status"] == "success"),
+        "failed": sum(1 for item in results if item["status"] == "failed"),
+        "skipped": sum(1 for item in results if item["status"] == "skipped"),
+        "total": len(results),
+    }
+    manifest = {"results": results, "summary": summary}
+    (output / "manifest.json").write_text(
+        json.dumps(manifest, ensure_ascii=False, indent=2),
         encoding="utf-8",
     )
-    export_messages_csv(messages, output / "messages.csv")
-    write_report(export_data, output / "report.html")
 
 
 def run_list_chats(documents_root=None):
@@ -176,8 +292,14 @@ def main(argv: Optional[Sequence[str]] = None) -> int:
             run_list_chats(documents_root=args.documents_root)
             return 0
 
+        if args.all_chats:
+            if not args.output:
+                parser.error("--output is required when --all-chats is used")
+            run_export_all(output_dir=args.output, documents_root=args.documents_root)
+            return 0
+
         if not args.chat or not args.output:
-            parser.error("--chat and --output are required unless --list-chats is used")
+            parser.error("--chat and --output are required unless --list-chats or --all-chats is used")
 
         run_export(
             chat_name=args.chat,
